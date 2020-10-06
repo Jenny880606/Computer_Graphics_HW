@@ -1,0 +1,968 @@
+<!-- Licensed under a BSD license. See license.html for license -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>WebGL - 3D Spot Lighting using step</title>
+<link type="text/css" href="resources/webgl-tutorials.css" rel="stylesheet" />
+<style>
+  canvas{
+    width:50vw;
+    height:75vh; 
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="uiContainer">
+  <div id="ui">
+    <div id="Head_X_Rotation"></div>
+    <div id="Head_Y_Rotation"></div> 
+    <div id="Light_Height"></div>
+    <div id="Light_Angle"></div>
+    <div id="limit"></div>
+  </div>
+</div>
+</body>
+<!--
+for most samples webgl-utils only provides shader compiling/linking and
+canvas resizing because why clutter the examples with code that's the same in every sample.
+See http://webgl2fundamentals.org/webgl/lessons/webgl-boilerplate.html
+and http://webgl2fundamentals.org/webgl/lessons/webgl-resizing-the-canvas.html
+for webgl-utils, m3, m4, and webgl-lessons-ui.
+-->
+<script src="resources/webgl-utils.js"></script>
+<script src="resources/webgl-lessons-ui.js"></script>
+<script src="resources/m4.js"></script>
+<script src="resources/headdata.js"></script>
+<script>
+  "use strict";
+  
+  var fieldOfViewRadians = degToRad(60);
+  var RotationRadians_X = 0;
+  var RotationRadians_Y = 0;
+  var Light_X = 0;
+  var Light_Y = 0;
+  var Light_Z = 0;
+  var shininess = 10;
+  var LightAngleRadians = 0;
+  var LightRadius = 300;
+  
+  function degToRad(d) {
+    return d * Math.PI / 180;
+  }
+
+  function radToDeg(r) {
+    return r * 180 / Math.PI;
+  }
+
+function main() {
+  // Get A WebGL context
+  /** @type {HTMLCanvasElement} */
+  var canvas = document.getElementById("canvas");
+  var gl = canvas.getContext("webgl2");
+  if (!gl) {
+    return;
+  }
+
+  drawScene(gl);
+
+  // Setup a ui.
+  webglLessonsUI.setupSlider("#Head_X_Rotation", {value: radToDeg(RotationRadians_X), slide: updateRotationX, min: -360, max: 360});
+  webglLessonsUI.setupSlider("#Head_Y_Rotation", {value: radToDeg(RotationRadians_Y), slide: updateRotationY, min: -360, max: 360});
+  webglLessonsUI.setupSlider("#Light_Height", {value: Light_Y, slide: updateTargetHeight, min: -300, max: 300});
+  webglLessonsUI.setupSlider("#Light_Angle", {value: radToDeg(LightAngleRadians), slide: updateTargetAngle, min: -360, max: 360});
+  webglLessonsUI.setupSlider("#limit", {value: shininess, slide: updateLimit, min: 1, max: 20});
+  
+
+  function updateTargetAngle(event, ui) {
+    LightAngleRadians = degToRad(ui.value);
+    Light_X = Math.sin(LightAngleRadians) * LightRadius;
+    Light_Z = Math.cos(LightAngleRadians) * LightRadius;
+    drawScene(gl);
+  }
+
+  function updateRotationX(event, ui) {
+    RotationRadians_X = degToRad(ui.value);
+    drawScene(gl);
+  }
+
+  function updateRotationY(event, ui) {
+    RotationRadians_Y = degToRad(ui.value);
+    drawScene(gl);
+  }
+
+  function updateTargetHeight(event, ui) {
+    Light_Y = ui.value;
+    drawScene(gl); 
+  }
+
+  function updateLimit(event, ui) {
+    shininess = ui.value;
+    drawScene(gl);
+  }
+}
+
+
+function drawScene(gl) {
+  webglUtils.resizeCanvasToDisplaySize(gl.canvas);
+  gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  DrawFlat(gl);
+  DrawGouraud(gl);
+  DrawPhong(gl);
+  DrawToon(gl);
+}
+
+function DrawFlat(gl) {
+
+  var vertexShaderSource = `#version 300 es
+
+  // an attribute is an input (in) to a vertex shader.
+  // It will receive data from a buffer
+  in vec4 a_position;
+  in vec3 a_normal;
+
+  uniform vec3 u_lightWorldPosition;
+  uniform vec3 u_viewWorldPosition;
+
+  uniform mat4 u_world;
+  uniform mat4 u_worldViewProjection;
+  uniform mat4 u_worldInverseTranspose;
+
+  // varyings to pass values to the fragment shader
+  flat out vec3 v_normal;
+  out vec3 v_surfaceToLight;
+  out vec3 v_surfaceToView;
+
+  // all shaders have a main function
+  void main() {
+    // Multiply the position by the matrix.
+    gl_Position = u_worldViewProjection * a_position;
+
+    // orient the normals and pass to the fragment shader
+    v_normal = mat3(u_worldInverseTranspose) * a_normal;
+
+    // compute the world position of the surfoace
+    vec3 surfaceWorldPosition = (u_world * a_position).xyz;
+
+    // compute the vector of the surface to the light
+    // and pass it to the fragment shader
+    v_surfaceToLight = u_lightWorldPosition - surfaceWorldPosition;
+
+    // compute the vector of the surface to the view/camera
+    // and pass it to the fragment shader
+    v_surfaceToView = u_viewWorldPosition - surfaceWorldPosition;
+  }
+  `;
+
+  var fragmentShaderSource = `#version 300 es
+
+  precision mediump float;
+
+  // Passed in and varied from the vertex shader.
+  flat in vec3 v_normal;
+  in vec3 v_surfaceToLight;
+  in vec3 v_surfaceToView;
+
+  uniform vec4 u_color;
+  uniform float u_shininess;
+
+  // we need to declare an output for the fragment shader
+  out vec4 outColor;
+
+  void main() {
+    // because v_normal is a varying it's interpolated
+    // so it will not be a uint vector. Normalizing it
+    // will make it a unit vector again
+    vec3 normal = normalize(v_normal);
+
+    vec3 surfaceToLightDirection = normalize(v_surfaceToLight);
+    vec3 surfaceToViewDirection = normalize(v_surfaceToView);
+    vec3 halfVector = normalize(surfaceToLightDirection + surfaceToViewDirection);
+
+    // compute the light by taking the dot product
+    // of the normal to the light's reverse direction
+    float light = dot(normal, surfaceToLightDirection);
+    float specular = 0.0;
+    if (light > 0.0) {
+      specular = pow(dot(normal, halfVector), u_shininess);
+    }
+
+    outColor = u_color;
+
+    // Lets multiply just the color portion (not the alpha)
+    // by the light
+    outColor.rgb *= light;
+
+    // Just add in the specular
+    outColor.rgb += specular;
+  }
+  `;
+
+  // setup GLSL program
+  var program = webglUtils.createProgramFromSources(gl,
+      [vertexShaderSource, fragmentShaderSource]);
+
+  //get attribute
+  var positionAttributeLocation = gl.getAttribLocation(program, "a_position");
+  var normalAttributeLocation = gl.getAttribLocation(program, "a_normal");
+  var worldViewProjectionLocation = gl.getUniformLocation(program, "u_worldViewProjection");
+  var worldInverseTransposeLocation = gl.getUniformLocation(program, "u_worldInverseTranspose");
+  var colorLocation = gl.getUniformLocation(program, "u_color");
+  var shininessLocation = gl.getUniformLocation(program, "u_shininess");
+  var lightWorldPositionLocation = gl.getUniformLocation(program, "u_lightWorldPosition");
+  var viewWorldPositionLocation = gl.getUniformLocation(program, "u_viewWorldPosition");
+  var worldLocation = gl.getUniformLocation(program, "u_world");
+  var positionBuffer = gl.createBuffer();
+
+  // Create a vertex array object (attribute state)
+  var vao = gl.createVertexArray();
+
+  // and make it the one we're currently working with
+  gl.bindVertexArray(vao);
+
+  // Turn on the attribute
+  gl.enableVertexAttribArray(positionAttributeLocation);
+
+  // Create a buffer
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+
+  // Set Geometry.
+  var numVertices = setGeometry(gl);
+
+    // Tell the attribute how to get data out of positionBuffer (ARRAY_BUFFER)
+    var size = 3;          // 3 components per iteration
+    var type = gl.FLOAT;   // the data is 32bit floats
+    var normalize = false; // don't normalize the data
+    var stride = 0;        // 0 = move forward size * sizeof(type) each iteration to get the next position
+    var offset = 0;        // start at the beginning of the buffer
+    gl.vertexAttribPointer(
+        positionAttributeLocation, size, type, normalize, stride, offset);
+
+    // create the color buffer, make it the current ARRAY_BUFFER
+    // and copy in the color values
+    var normalBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
+    setNormals(gl);
+
+    // Turn on the attribute
+    gl.enableVertexAttribArray(normalAttributeLocation);
+
+    // Tell the attribute how to get data out of colorBuffer (ARRAY_BUFFER)
+    var size = 3;          // 3 components per iteration
+    var type = gl.UNSIGNED_BYTE;   // the data is 8bit unsigned bytes
+    var normalize = true;  // convert from 0-255 to 0.0-1.0
+    var stride = 0;        // 0 = move forward size * sizeof(type) each iteration to get the next color
+    var offset = 0;        // start at the beginning of the buffer
+    gl.vertexAttribPointer(
+        normalAttributeLocation, size, type, normalize, stride, offset);    
+
+    var fieldOfViewRadians = degToRad(60);
+
+    // turn on depth testing
+    gl.enable(gl.DEPTH_TEST);
+
+    // tell webgl to cull faces
+    gl.enable(gl.CULL_FACE);
+
+    // Tell it to use our program (pair of shaders)
+    gl.useProgram(program);
+
+    // Bind the attribute/buffer set we want.
+    gl.bindVertexArray(vao);
+
+    // Compute the matrix
+    var aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+    var zNear = 1;
+    var zFar = 2000;
+    var projectionMatrix = m4.perspective(fieldOfViewRadians, aspect, zNear, zFar);
+
+    // Compute the camera's matrix
+    var camera = [0, 150, 200];
+    var target = [-0, 35, 0];
+    var up = [0, 1, 0];
+    var cameraMatrix = m4.lookAt(camera, target, up);
+
+    // Make a view matrix from the camera matrix.
+    var viewMatrix = m4.inverse(cameraMatrix);
+
+    // create a viewProjection matrix. This will both apply perspective
+    // AND move the world so that the camera is effectively the origin
+    var viewProjectionMatrix = m4.multiply(projectionMatrix, viewMatrix);
+
+    // Set the color to use
+    gl.uniform4fv(colorLocation, [0.2, 1, 0.2, 1]); // green
+
+    // set the light position
+    gl.uniform3fv(lightWorldPositionLocation, [Light_X, Light_Y, Light_Z]);
+
+    // set the camera/view position
+    gl.uniform3fv(viewWorldPositionLocation, camera);
+
+    // set the shininess
+    gl.uniform1f(shininessLocation, shininess);
+
+    // Draw a head at the origin with rotation
+    var worldMatrix = m4.translation(-150, 0, -100); 
+    worldMatrix = m4.yRotate(worldMatrix, RotationRadians_Y);
+    worldMatrix = m4.xRotate(worldMatrix, RotationRadians_X);
+
+    // Set the matrices
+    var worldViewProjectionMatrix = m4.multiply(viewProjectionMatrix, worldMatrix);
+    var worldInverseMatrix = m4.inverse(worldMatrix);
+    var worldInverseTransposeMatrix = m4.transpose(worldInverseMatrix);
+
+      // Set the matrices
+      gl.uniformMatrix4fv(worldLocation, false,worldMatrix);
+      gl.uniformMatrix4fv(worldViewProjectionLocation, false,worldViewProjectionMatrix);
+      gl.uniformMatrix4fv(worldInverseTransposeLocation, false,worldInverseTransposeMatrix);    
+
+      // Draw the geometry.
+      var offset = 0;
+      gl.drawArrays(gl.TRIANGLES, 0, numVertices);
+
+}
+
+function DrawGouraud(gl) {
+
+  var vertexShaderSource = `#version 300 es
+
+  // an attribute is an input (in) to a vertex shader.
+// It will receive data from a buffer
+in vec4 a_position;
+in vec3 a_normal;
+
+uniform vec3 u_lightWorldPosition;
+uniform vec3 u_viewWorldPosition;
+
+uniform mat4 u_world;
+uniform mat4 u_worldViewProjection;
+uniform mat4 u_worldInverseTranspose;
+
+// varyings to pass values to the fragment shader
+
+uniform vec4 u_color;
+uniform float u_shininess;
+out vec4 v_outColor;
+void main() {
+  gl_Position = u_worldViewProjection * a_position;
+  vec3 v_normal = mat3(u_worldInverseTranspose) * a_normal;
+  vec3 surfaceWorldPosition = (u_world * a_position).xyz;
+  vec3 v_surfaceToLight = u_lightWorldPosition - surfaceWorldPosition;
+  vec3 v_surfaceToView = u_viewWorldPosition - surfaceWorldPosition;
+  vec3 normal = normalize(v_normal);
+
+
+  vec3 surfaceToLightDirection = normalize(v_surfaceToLight);
+  vec3 surfaceToViewDirection = normalize(v_surfaceToView);
+  vec3 halfVector = normalize(surfaceToLightDirection + surfaceToViewDirection);
+
+  float light = dot(normal, surfaceToLightDirection);
+  float specular = 0.0;
+  if (light > 0.0) {
+    specular = pow(dot(normal, halfVector), u_shininess);
+  }
+  v_outColor = u_color;
+  v_outColor.rgb *= light;
+  v_outColor.rgb += specular;
+}
+`;
+
+var fragmentShaderSource = `#version 300 es
+
+precision mediump float;
+
+in vec4 v_outColor;
+out vec4 outColor;
+
+void main() {
+  outColor = v_outColor;
+}
+`;
+
+  // setup GLSL program
+  var program = webglUtils.createProgramFromSources(gl,
+      [vertexShaderSource, fragmentShaderSource]);
+
+  //get attribute
+  var positionAttributeLocation = gl.getAttribLocation(program, "a_position");
+  var normalAttributeLocation = gl.getAttribLocation(program, "a_normal");
+  var worldViewProjectionLocation = gl.getUniformLocation(program, "u_worldViewProjection");
+  var worldInverseTransposeLocation = gl.getUniformLocation(program, "u_worldInverseTranspose");
+  var colorLocation = gl.getUniformLocation(program, "u_color");
+  var shininessLocation = gl.getUniformLocation(program, "u_shininess");
+  var lightWorldPositionLocation = gl.getUniformLocation(program, "u_lightWorldPosition");
+  var viewWorldPositionLocation = gl.getUniformLocation(program, "u_viewWorldPosition");
+  var worldLocation = gl.getUniformLocation(program, "u_world");
+  var positionBuffer = gl.createBuffer();
+
+  // Create a vertex array object (attribute state)
+  var vao = gl.createVertexArray();
+
+  // and make it the one we're currently working with
+  gl.bindVertexArray(vao);
+
+  // Turn on the attribute
+  gl.enableVertexAttribArray(positionAttributeLocation);
+
+  // Create a buffer
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+
+  // Set Geometry.
+  var numVertices = setGeometry(gl);
+
+    // Tell the attribute how to get data out of positionBuffer (ARRAY_BUFFER)
+    var size = 3;          // 3 components per iteration
+    var type = gl.FLOAT;   // the data is 32bit floats
+    var normalize = false; // don't normalize the data
+    var stride = 0;        // 0 = move forward size * sizeof(type) each iteration to get the next position
+    var offset = 0;        // start at the beginning of the buffer
+    gl.vertexAttribPointer(
+        positionAttributeLocation, size, type, normalize, stride, offset);
+
+    // create the color buffer, make it the current ARRAY_BUFFER
+    // and copy in the color values
+    var normalBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
+    setNormals(gl);
+
+    // Turn on the attribute
+    gl.enableVertexAttribArray(normalAttributeLocation);
+
+    // Tell the attribute how to get data out of colorBuffer (ARRAY_BUFFER)
+    var size = 3;          // 3 components per iteration
+    var type = gl.UNSIGNED_BYTE;   // the data is 8bit unsigned bytes
+    var normalize = true;  // convert from 0-255 to 0.0-1.0
+    var stride = 0;        // 0 = move forward size * sizeof(type) each iteration to get the next color
+    var offset = 0;        // start at the beginning of the buffer
+    gl.vertexAttribPointer(
+        normalAttributeLocation, size, type, normalize, stride, offset);
+        
+    var fieldOfViewRadians = degToRad(60);
+
+      // turn on depth testing
+      gl.enable(gl.DEPTH_TEST);
+
+      // tell webgl to cull faces
+      gl.enable(gl.CULL_FACE);
+
+      // Tell it to use our program (pair of shaders)
+      gl.useProgram(program);
+ 
+      // Bind the attribute/buffer set we want.
+      gl.bindVertexArray(vao);
+
+      // Compute the matrix
+      var aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+      var zNear = 1;
+      var zFar = 2000;
+      var projectionMatrix = m4.perspective(fieldOfViewRadians, aspect, zNear, zFar);
+
+      // Compute the camera's matrix
+      var camera = [0, 150, 200];
+      var target = [-0, 35, -0];
+      var up = [0, 1, 0];
+      var cameraMatrix = m4.lookAt(camera, target, up);
+
+      // Make a view matrix from the camera matrix.
+      var viewMatrix = m4.inverse(cameraMatrix);
+
+      // create a viewProjection matrix. This will both apply perspective
+      // AND move the world so that the camera is effectively the origin
+      var viewProjectionMatrix = m4.multiply(projectionMatrix, viewMatrix);
+
+      // Set the color to use
+      gl.uniform4fv(colorLocation, [0.2, 1, 0.2, 1]); // green
+
+      // set the light position
+      gl.uniform3fv(lightWorldPositionLocation, [Light_X, Light_Y, Light_Z]);
+
+      // set the camera/view position
+      gl.uniform3fv(viewWorldPositionLocation, camera);
+
+      // set the shininess
+      gl.uniform1f(shininessLocation, shininess);
+
+      // Draw a head at the origin with rotation
+      var worldMatrix = m4.translation(-50, -0, -100); 
+      worldMatrix = m4.yRotate(worldMatrix, RotationRadians_Y);
+      worldMatrix = m4.xRotate(worldMatrix, RotationRadians_X);
+
+      // Set the matrices
+      var worldViewProjectionMatrix = m4.multiply(viewProjectionMatrix, worldMatrix);
+      var worldInverseMatrix = m4.inverse(worldMatrix);
+      var worldInverseTransposeMatrix = m4.transpose(worldInverseMatrix);
+
+      // Set the matrices
+      gl.uniformMatrix4fv(worldLocation, false,worldMatrix);
+      gl.uniformMatrix4fv(worldViewProjectionLocation, false,worldViewProjectionMatrix);
+      gl.uniformMatrix4fv(worldInverseTransposeLocation, false,worldInverseTransposeMatrix);    
+  
+      // Draw the geometry.
+      var offset = 0;
+      gl.drawArrays(gl.TRIANGLES, 0, numVertices);
+
+}
+
+function DrawPhong(gl) {
+
+  var vertexShaderSource = `#version 300 es
+
+// an attribute is an input (in) to a vertex shader.
+// It will receive data from a buffer
+in vec4 a_position;
+in vec3 a_normal;
+
+uniform vec3 u_lightWorldPosition;
+uniform vec3 u_viewWorldPosition;
+
+uniform mat4 u_world;
+uniform mat4 u_worldViewProjection;
+uniform mat4 u_worldInverseTranspose;
+
+// varyings to pass values to the fragment shader
+out vec3 v_normal;
+out vec3 v_surfaceToLight;
+out vec3 v_surfaceToView;
+
+// all shaders have a main function
+void main() {
+  // Multiply the position by the matrix.
+  gl_Position = u_worldViewProjection * a_position;
+
+  // orient the normals and pass to the fragment shader
+  v_normal = mat3(u_worldInverseTranspose) * a_normal;
+
+  // compute the world position of the surfoace
+  vec3 surfaceWorldPosition = (u_world * a_position).xyz;
+
+  // compute the vector of the surface to the light
+  // and pass it to the fragment shader
+  v_surfaceToLight = u_lightWorldPosition - surfaceWorldPosition;
+
+  // compute the vector of the surface to the view/camera
+  // and pass it to the fragment shader
+  v_surfaceToView = u_viewWorldPosition - surfaceWorldPosition;
+}
+`;
+
+var fragmentShaderSource = `#version 300 es
+
+precision mediump float;
+
+// Passed in and varied from the vertex shader.
+in vec3 v_normal;
+in vec3 v_surfaceToLight;
+in vec3 v_surfaceToView;
+
+uniform vec4 u_color;
+uniform float u_shininess;
+
+// we need to declare an output for the fragment shader
+out vec4 outColor;
+
+void main() {
+  // because v_normal is a varying it's interpolated
+  // so it will not be a uint vector. Normalizing it
+  // will make it a unit vector again
+  vec3 normal = normalize(v_normal);
+
+  vec3 surfaceToLightDirection = normalize(v_surfaceToLight);
+  vec3 surfaceToViewDirection = normalize(v_surfaceToView);
+  vec3 halfVector = normalize(surfaceToLightDirection + surfaceToViewDirection);
+
+  // compute the light by taking the dot product
+  // of the normal to the light's reverse direction
+  float light = dot(normal, surfaceToLightDirection);
+  float specular = 0.0;
+  if (light > 0.0) {
+    specular = pow(dot(normal, halfVector), u_shininess);
+  }
+
+  outColor = u_color;
+
+  // Lets multiply just the color portion (not the alpha)
+  // by the light
+  outColor.rgb *= light;
+
+  // Just add in the specular
+  outColor.rgb += specular;
+}
+`;
+  var program = webglUtils.createProgramFromSources(gl,
+      [vertexShaderSource, fragmentShaderSource]);
+
+  //get attribute
+  var positionAttributeLocation = gl.getAttribLocation(program, "a_position");
+  var normalAttributeLocation = gl.getAttribLocation(program, "a_normal");
+  var worldViewProjectionLocation = gl.getUniformLocation(program, "u_worldViewProjection");
+  var worldInverseTransposeLocation = gl.getUniformLocation(program, "u_worldInverseTranspose");
+  var colorLocation = gl.getUniformLocation(program, "u_color");
+  var shininessLocation = gl.getUniformLocation(program, "u_shininess");
+  var lightWorldPositionLocation = gl.getUniformLocation(program, "u_lightWorldPosition");
+  var viewWorldPositionLocation = gl.getUniformLocation(program, "u_viewWorldPosition");
+  var worldLocation = gl.getUniformLocation(program, "u_world");
+  var positionBuffer = gl.createBuffer();
+
+// Create a vertex array object (attribute state)
+  var vao = gl.createVertexArray();
+
+  // and make it the one we're currently working with
+  gl.bindVertexArray(vao);
+
+  // Turn on the attribute
+  gl.enableVertexAttribArray(positionAttributeLocation);
+
+  // Create a buffer
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+
+  // Set Geometry.
+  var numVertices = setGeometry(gl);
+
+    // Tell the attribute how to get data out of positionBuffer (ARRAY_BUFFER)
+    var size = 3;          // 3 components per iteration
+    var type = gl.FLOAT;   // the data is 32bit floats
+    var normalize = false; // don't normalize the data
+    var stride = 0;        // 0 = move forward size * sizeof(type) each iteration to get the next position
+    var offset = 0;        // start at the beginning of the buffer
+    gl.vertexAttribPointer(
+        positionAttributeLocation, size, type, normalize, stride, offset);
+
+    // create the color buffer, make it the current ARRAY_BUFFER
+    // and copy in the color values
+    var normalBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
+    setNormals(gl);
+
+    // Turn on the attribute
+    gl.enableVertexAttribArray(normalAttributeLocation);
+
+    // Tell the attribute how to get data out of colorBuffer (ARRAY_BUFFER)
+    var size = 3;          // 3 components per iteration
+    var type = gl.UNSIGNED_BYTE;   // the data is 8bit unsigned bytes
+    var normalize = true;  // convert from 0-255 to 0.0-1.0
+    var stride = 0;        // 0 = move forward size * sizeof(type) each iteration to get the next color
+    var offset = 0;        // start at the beginning of the buffer
+    gl.vertexAttribPointer(
+        normalAttributeLocation, size, type, normalize, stride, offset);
+
+    var fieldOfViewRadians = degToRad(60);
+
+      // turn on depth testing
+      gl.enable(gl.DEPTH_TEST);
+  
+      // tell webgl to cull faces
+      gl.enable(gl.CULL_FACE);
+      
+      // Tell it to use our program (pair of shaders)
+      gl.useProgram(program);
+  
+      // Bind the attribute/buffer set we want.
+      gl.bindVertexArray(vao);
+        
+      // Compute the matrix
+      var aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+      var zNear = 1;
+      var zFar = 2000;
+      var projectionMatrix = m4.perspective(fieldOfViewRadians, aspect, zNear, zFar);
+
+      // Compute the camera's matrix
+      var camera = [0, 150, 200];
+      var target = [-0, 35, -0];
+      var up = [0, 1, 0];
+      var cameraMatrix = m4.lookAt(camera, target, up);
+      
+      // Make a view matrix from the camera matrix.
+      var viewMatrix = m4.inverse(cameraMatrix);
+      
+      // create a viewProjection matrix. This will both apply perspective
+      // AND move the world so that the camera is effectively the origin
+      var viewProjectionMatrix = m4.multiply(projectionMatrix, viewMatrix);
+  
+      // Set the color to use
+      gl.uniform4fv(colorLocation, [0.2, 1, 0.2, 1]); // green
+  
+      // set the light position
+      gl.uniform3fv(lightWorldPositionLocation, [Light_X, Light_Y, Light_Z]);
+  
+      // set the camera/view position
+      gl.uniform3fv(viewWorldPositionLocation, camera);
+  
+      // set the shininess
+      gl.uniform1f(shininessLocation, shininess);
+  
+      // Draw a head at the origin with rotation
+      var worldMatrix = m4.translation(50, 0, -100); 
+      worldMatrix = m4.yRotate(worldMatrix, RotationRadians_Y);
+      worldMatrix = m4.xRotate(worldMatrix, RotationRadians_X);
+
+      // Set the matrices
+      var worldViewProjectionMatrix = m4.multiply(viewProjectionMatrix, worldMatrix);
+      var worldInverseMatrix = m4.inverse(worldMatrix);
+      var worldInverseTransposeMatrix = m4.transpose(worldInverseMatrix);
+  
+      // Set the matrices
+      gl.uniformMatrix4fv(worldLocation, false,worldMatrix);
+      gl.uniformMatrix4fv(worldViewProjectionLocation, false,worldViewProjectionMatrix);
+      gl.uniformMatrix4fv(worldInverseTransposeLocation, false,worldInverseTransposeMatrix);    
+  
+      // Draw the geometry.
+      var offset = 0;
+      gl.drawArrays(gl.TRIANGLES, 0, numVertices);
+
+}
+
+function DrawToon(gl) {
+  var vertexShaderSource = `#version 300 es
+
+  // an attribute is an input (in) to a vertex shader.
+  // It will receive data from a buffer
+  in vec4 a_position;
+  in vec3 a_normal;
+
+  uniform vec3 u_lightWorldPosition;
+  uniform vec3 u_viewWorldPosition;
+
+  uniform mat4 u_world;
+  uniform mat4 u_worldViewProjection;
+  uniform mat4 u_worldInverseTranspose;
+
+  // varyings to pass values to the fragment shader
+  out vec3 v_normal;
+  out vec3 v_surfaceToLight;
+  out vec3 v_surfaceToView;
+
+  // all shaders have a main function
+  void main() {
+    // Multiply the position by the matrix.
+    gl_Position = u_worldViewProjection * a_position;
+
+    // orient the normals and pass to the fragment shader
+    v_normal = mat3(u_worldInverseTranspose) * a_normal;
+
+    // compute the world position of the surfoace
+    vec3 surfaceWorldPosition = (u_world * a_position).xyz;
+
+    // compute the vector of the surface to the light
+    // and pass it to the fragment shader
+    v_surfaceToLight = u_lightWorldPosition - surfaceWorldPosition;
+
+    // compute the vector of the surface to the view/camera
+    // and pass it to the fragment shader
+    v_surfaceToView = u_viewWorldPosition - surfaceWorldPosition;
+  }
+  `;
+
+          var fragmentShaderSource = `#version 300 es
+
+  precision mediump float;
+
+  // Passed in and varied from the vertex shader.
+  in vec3 v_normal;
+  in vec3 v_surfaceToLight;
+  in vec3 v_surfaceToView;
+
+  uniform vec4 u_color;
+  uniform float u_shininess;
+
+  // we need to declare an output for the fragment shader
+  out vec4 outColor;
+
+  float toon(float value){
+      if(value > 0.75)
+        return 1.0;
+      else if(value > 0.5)
+        return 0.75;
+      else if(value > 0.25)
+        return 0.5;
+      else
+        return 0.0;
+      return 0.5;
+  }
+
+  void main() {
+    // because v_normal is a varying it's interpolated
+    // so it will not be a uint vector. Normalizing it
+    // will make it a unit vector again
+    vec3 normal = normalize(v_normal);
+
+    vec3 surfaceToLightDirection = normalize(v_surfaceToLight);
+    vec3 surfaceToViewDirection = normalize(v_surfaceToView);
+    vec3 halfVector = normalize(surfaceToLightDirection + surfaceToViewDirection);
+
+    // compute the light by taking the dot product
+    // of the normal to the light's reverse direction
+    float light = dot(normal, surfaceToLightDirection);
+    float specular = 0.0;
+    if (light > 0.0) {
+      specular = pow(dot(normal, halfVector), u_shininess);
+    }
+
+    outColor = u_color;
+
+    // Lets multiply just the color portion (not the alpha)
+    // by the light
+    outColor.rgb *= light;
+
+    // Just add in the specular
+    outColor.rgb += specular;
+    outColor = vec4(toon(outColor.r), toon(outColor.g), toon(outColor.b), outColor.a);
+  }
+  `;
+  var program = webglUtils.createProgramFromSources(gl,
+      [vertexShaderSource, fragmentShaderSource]);
+
+  //get attribute
+  var positionAttributeLocation = gl.getAttribLocation(program, "a_position");
+  var normalAttributeLocation = gl.getAttribLocation(program, "a_normal");
+  var worldViewProjectionLocation = gl.getUniformLocation(program, "u_worldViewProjection");
+  var worldInverseTransposeLocation = gl.getUniformLocation(program, "u_worldInverseTranspose");
+  var colorLocation = gl.getUniformLocation(program, "u_color");
+  var shininessLocation = gl.getUniformLocation(program, "u_shininess");
+  var lightWorldPositionLocation = gl.getUniformLocation(program, "u_lightWorldPosition");
+  var viewWorldPositionLocation = gl.getUniformLocation(program, "u_viewWorldPosition");
+  var worldLocation = gl.getUniformLocation(program, "u_world");
+  var positionBuffer = gl.createBuffer();
+
+   // Create a vertex array object (attribute state)
+  var vao = gl.createVertexArray();
+
+  // and make it the one we're currently working with
+  gl.bindVertexArray(vao);
+
+  // Turn on the attribute
+  gl.enableVertexAttribArray(positionAttributeLocation);
+
+  // Create a buffer
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+
+  // Set Geometry.
+  var numVertices = setGeometry(gl);
+
+    // Tell the attribute how to get data out of positionBuffer (ARRAY_BUFFER)
+    var size = 3;          // 3 components per iteration
+    var type = gl.FLOAT;   // the data is 32bit floats
+    var normalize = false; // don't normalize the data
+    var stride = 0;        // 0 = move forward size * sizeof(type) each iteration to get the next position
+    var offset = 0;        // start at the beginning of the buffer
+    gl.vertexAttribPointer(
+        positionAttributeLocation, size, type, normalize, stride, offset);
+
+    // create the color buffer, make it the current ARRAY_BUFFER
+    // and copy in the color values
+    var normalBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
+    setNormals(gl);
+
+    // Turn on the attribute
+    gl.enableVertexAttribArray(normalAttributeLocation);
+
+    // Tell the attribute how to get data out of colorBuffer (ARRAY_BUFFER)
+    var size = 3;          // 3 components per iteration
+    var type = gl.UNSIGNED_BYTE;   // the data is 8bit unsigned bytes
+    var normalize = true;  // convert from 0-255 to 0.0-1.0
+    var stride = 0;        // 0 = move forward size * sizeof(type) each iteration to get the next color
+    var offset = 0;        // start at the beginning of the buffer
+    gl.vertexAttribPointer(
+        normalAttributeLocation, size, type, normalize, stride, offset);
+
+    var fieldOfViewRadians = degToRad(60);
+
+      // turn on depth testing
+      gl.enable(gl.DEPTH_TEST);
+  
+      // tell webgl to cull faces
+      gl.enable(gl.CULL_FACE);
+      
+      // Tell it to use our program (pair of shaders)
+      gl.useProgram(program);
+  
+      // Bind the attribute/buffer set we want.
+      gl.bindVertexArray(vao);
+        
+      // Compute the matrix
+      var aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+      var zNear = 1;
+      var zFar = 2000;
+      var projectionMatrix = m4.perspective(fieldOfViewRadians, aspect, zNear, zFar);
+
+      // Compute the camera's matrix
+      var camera = [0, 150, 200];
+      var target = [-0, 35, -0];
+      var up = [0, 1, 0];
+      var cameraMatrix = m4.lookAt(camera, target, up);
+      
+      // Make a view matrix from the camera matrix.
+      var viewMatrix = m4.inverse(cameraMatrix);
+      
+      // create a viewProjection matrix. This will both apply perspective
+      // AND move the world so that the camera is effectively the origin
+      var viewProjectionMatrix = m4.multiply(projectionMatrix, viewMatrix);
+  
+      // Set the color to use
+      gl.uniform4fv(colorLocation, [0.2, 1, 0.2, 1]); // green
+  
+      // set the light position
+      gl.uniform3fv(lightWorldPositionLocation, [Light_X, Light_Y, Light_Z]);
+  
+      // set the camera/view position
+      gl.uniform3fv(viewWorldPositionLocation, camera);
+  
+      // set the shininess
+      gl.uniform1f(shininessLocation, shininess);
+  
+      // Draw a head at the origin with rotation
+      var worldMatrix = m4.translation(150, -0, -100); 
+      worldMatrix = m4.yRotate(worldMatrix, RotationRadians_Y);
+      worldMatrix = m4.xRotate(worldMatrix, RotationRadians_X);
+
+      // Set the matrices
+      var worldViewProjectionMatrix = m4.multiply(viewProjectionMatrix, worldMatrix);
+      var worldInverseMatrix = m4.inverse(worldMatrix);
+      var worldInverseTransposeMatrix = m4.transpose(worldInverseMatrix);
+  
+      // Set the matrices
+      gl.uniformMatrix4fv(worldLocation, false,worldMatrix);
+      gl.uniformMatrix4fv(worldViewProjectionLocation, false,worldViewProjectionMatrix);
+      gl.uniformMatrix4fv(worldInverseTransposeLocation, false,worldInverseTransposeMatrix);    
+
+      // Draw the geometry.
+      var offset = 0;
+      gl.drawArrays(gl.TRIANGLES, 0, numVertices);
+
+}
+
+function setGeometry(gl) {
+  var positions = new Float32Array(HeadData.positions);
+  var matrix = m4.scale(m4.yRotation(Math.PI), 6, 6, 6);
+  for (var ii = 0; ii < positions.length; ii += 3) {
+    var vector = m4.transformVector(matrix, [positions[ii + 0], positions[ii + 1], positions[ii + 2], 1]);
+    positions[ii + 0] = vector[0];
+    positions[ii + 1] = vector[1];
+    positions[ii + 2] = vector[2];
+  }
+  
+  gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+  return positions.length / 3;
+}
+
+function setNormals(gl) {
+  var normals = HeadData.normals;
+  var colors = new Uint8Array(normals.length);
+  var offset = 0;
+  for (var ii = 0; ii < colors.length; ii += 3) {
+    for (var jj = 0; jj < 3; ++jj) {
+      colors[offset] = (normals[offset] * 0.5 + 0.5) * 255;
+      ++offset;
+    }
+  }
+  gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STATIC_DRAW);
+}
+
+
+main();
+</script>
+</html>

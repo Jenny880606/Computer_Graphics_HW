@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>three.js webgl - geometry - cube</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<style>
+			body {
+				margin: 0px;
+				background-color: #000000;
+				overflow: hidden;
+			}
+		</style>
+	</head>
+	<body>
+		<div id="para" style="background:pink"></div>
+		<script src="three.js/build/three.js"></script>
+		<script src="js/controls/OrbitControls.js"></script>
+		<script src="js/libs/dat.gui.min.js"></script>
+		<script src="js/controls/THREEx.KeyboardState.js"></script>
+
+		<script>
+			var starttime = new Date(), nowtime, playtime, bumbendtime, bumbrecover = false;
+			var targetMesh, tank, target = false, turretMesh, tankcamera, wheelMeshes, turretPivot;
+			var controls, score = 0, wallGeometry, wallMaterial;
+			var camera, scene, renderer, keyboard, bodyMesh, wall, bumb, bumbVolocity = 0;
+			var mesh, alive = true, bumbDistance = 100, bumbRecoverTime = 0;
+			var velocity = 10, rotspeed = 0.05, barrelrotspeed = 0.05, heading = 0, barrelHeading = 0, followMe = false;
+			var tankx = [], tankz = [], cubex = [], cubez = [], turretx = [], turretz = [], targetM = [], targettime = [];
+			var collidableMeshList = [], wallM = [], monstertime = 8, endgame = false;
+			var s = 100;
+
+			var gui, params;
+				var guiMe = function() {
+				  this.Heading = heading;
+				  this.BarrelHeading = barrelHeading;
+				  this.Velocity = velocity;
+				  this.RotSpeed = rotspeed;
+				  this.BarrelRotSpeed = barrelrotspeed;
+				  this.FollowMe = false;
+				  this.BumbVolocity = bumbVolocity;
+				  this.BumbDistance = bumbDistance;
+				  this.BumbRecoverTime = bumbRecoverTime;
+				  this.MonsterTime = monstertime;
+				};
+
+			init();
+			animate();
+
+			function init() {
+				keyboard = new THREEx.KeyboardState();
+
+				var SCREEN_WIDTH = window.innerWidth, SCREEN_HEIGHT = window.innerHeight;
+				var VIEW_ANGLE = 60, ASPECT = SCREEN_WIDTH / SCREEN_HEIGHT, NEAR = 0.1, FAR = 20000;
+				tankcamera = new THREE.PerspectiveCamera( VIEW_ANGLE, ASPECT, NEAR, FAR);
+
+				camera = new THREE.PerspectiveCamera( 70, window.innerWidth / window.innerHeight, 1, 1000 );
+				camera.position.y = 400;
+
+				scene = new THREE.Scene();
+				scene.add(tankcamera);
+
+				// create a light
+				const light = new THREE.DirectionalLight(0xffffff);
+				light.position.set(20,100,50);
+				scene.add(light);
+				light.castShadow = true;
+				light.shadow.mapSize.width = 2048;
+				light.shadow.mapSize.height = 2048;
+
+				const d = 50;
+				light.shadow.camera.left = -d;
+				light.shadow.camera.right = d;
+				light.shadow.camera.top = d;
+				light.shadow.camera.bottom = -d;
+				light.shadow.camera.near = 1;
+				light.shadow.camera.far = 50;
+				light.shadow.bias = 0.001;
+
+				// add a ground plane
+				var gronudTexture = new THREE.TextureLoader().load( 'textures/UV_Grid_Sm.jpg' );
+				var groundGeometry = new THREE.PlaneGeometry( 700, 700 );
+				var groundMaterial = new THREE.MeshPhongMaterial( {map: gronudTexture, side: THREE.DoubleSide} );
+				var groundMesh = new THREE.Mesh( groundGeometry, groundMaterial );
+				groundMesh.rotation.x = 90 * Math.PI / 180;
+				groundMesh.position.Y = -100.01;
+				scene.add( groundMesh );
+
+				const carWidth = 40;
+				const carHeight = 30;
+				const carLength = 40;
+
+				tank = new THREE.Object3D();
+				scene.add(tank);
+
+				var boxTexture = new THREE.TextureLoader().load( 'textures/aaa.jpg' );
+				const bodyGeometry = new THREE.BoxBufferGeometry(carWidth, carHeight, carLength);
+				const bodyMaterial = new THREE.MeshPhongMaterial({map: boxTexture});
+				bodyMesh = new THREE.Mesh(bodyGeometry, bodyMaterial);
+				bodyMesh.position.y = 23;
+				bodyMesh.castShadow = true;
+				tank.add(bodyMesh);
+
+				var wheelTexture = new THREE.TextureLoader().load( 'textures/BB8.jpg' );
+				const wheelRadius = 12;
+				const wheelThickness = 4;
+				const wheelSegments = 6;
+				const wheelGeometry = new THREE.CylinderBufferGeometry(
+				      wheelRadius,     // top radius
+				      wheelRadius,     // bottom radius
+				      wheelThickness,  // height of cylinder
+				      wheelSegments);
+				const wheelMaterial = new THREE.MeshPhongMaterial({map: wheelTexture});
+				const wheelPositions = [
+				    [-carWidth / 2 - wheelThickness / 2, -carHeight / 2,  carLength / 3],
+				    [ carWidth / 2 + wheelThickness / 2, -carHeight / 2,  carLength / 3],
+				    //[-carWidth / 2 - wheelThickness / 2, -carHeight / 2, 0],
+				    //[ carWidth / 2 + wheelThickness / 2, -carHeight / 2, 0],
+				    [-carWidth / 2 - wheelThickness / 2, -carHeight / 2, -carLength / 3],
+				    [ carWidth / 2 + wheelThickness / 2, -carHeight / 2, -carLength / 3],
+				];
+				wheelMeshes = wheelPositions.map((position) => {
+					const mesh = new THREE.Mesh(wheelGeometry, wheelMaterial);
+					mesh.position.set(...position);
+					mesh.rotation.z = Math.PI * 0.5;
+					mesh.castShadow = true;
+					bodyMesh.add(mesh);
+					return mesh;
+				});
+
+				const domeRadius = 17;
+				const domeWidthSubdivisions = 20;
+				const domeHeightSubdivisions = 25;
+				const domePhiStart = 0;
+				const domePhiEnd = Math.PI * 2;
+				const domeThetaStart = 0;
+				const domeThetaEnd = Math.PI * .5;
+				var domeTexture = new THREE.TextureLoader().load( 'textures/bbb.jpg' );
+				const domeMaterial = new THREE.MeshPhongMaterial({map: domeTexture});
+				const domeGeometry = new THREE.SphereBufferGeometry(
+				  domeRadius, domeWidthSubdivisions, domeHeightSubdivisions,
+				  domePhiStart, domePhiEnd, domeThetaStart, domeThetaEnd);
+				const domeMesh = new THREE.Mesh(domeGeometry, domeMaterial);
+				domeMesh.castShadow = true;
+				bodyMesh.add(domeMesh);
+				domeMesh.position.y = 16;
+
+				const turretWidth =1.5;
+				const turretHeight = 1.5;
+				const turretLength = carLength * .75 * .2;
+				const turretGeometry = new THREE.BoxBufferGeometry(
+				  turretWidth, turretHeight, turretLength);
+				turretMesh = new THREE.Mesh(turretGeometry, bodyMaterial);
+				turretPivot = new THREE.Object3D();
+				turretMesh.castShadow = true;
+				turretPivot.scale.set(5, 5, 5);
+				turretPivot.position.y = 20;
+				turretMesh.position.z = turretLength * 1;
+				turretPivot.add(turretMesh);
+				bodyMesh.add(turretPivot);
+
+				const targetGeometry = new THREE.SphereBufferGeometry(1, 6, 3);
+				const targetMaterial = new THREE.MeshPhongMaterial({color: 0x00FF00, flatShading: true});
+
+				var wallTexture = new THREE.TextureLoader().load( 'textures/monster.png' );
+				wallGeometry = new THREE.CubeGeometry( 40, 30, 40, 1, 1, 1 );
+				wallMaterial = new THREE.MeshBasicMaterial( {map: wallTexture} );
+
+				/*wall = new THREE.Mesh(wallGeometry, wallMaterial);
+				wall.position.set((-1) * Math.floor(Math.random()*300),20,(-1) * Math.floor(Math.random()*300));
+				scene.add(wall);
+				collidableMeshList.push(wall);*/
+
+				var bumbTexture = new THREE.TextureLoader().load( 'textures/bumb.jpg' );
+				var bumbMaterial = new THREE.MeshBasicMaterial( {map: bumbTexture} );
+
+				bumb = new THREE.Mesh(wallGeometry, bumbMaterial);
+				var bbb = Math.floor(Math.random()*bumbDistance - 2);
+				bumb.position.set(bbb,20,(-1) * Math.sqrt(bumbDistance * bumbDistance - bbb * bbb));
+				scene.add(bumb);
+				collidableMeshList.push(bumb);
+				window.onkeydown = function( event ) {
+					var key = String.fromCharCode(event.keyCode);
+					//console.log(key);
+					switch( key ) {
+					/*  case 'w': case 'W':
+							tank.position.z += Math.cos(tank.rotation.y) * velocity;
+							tank.position.x += Math.sin(tank.rotation.y) * velocity;
+							wheelMeshes.forEach((obj) => {
+  								obj.rotation.x += velocity * 3;
+							});
+							break;
+					  case 's': case 'S':
+							tank.position.z -= Math.cos(tank.rotation.y) * velocity;
+							tank.position.x  -= Math.sin(tank.rotation.y) * velocity;
+							wheelMeshes.forEach((obj) => {
+  								obj.rotation.x -= velocity * 3;
+							});
+							break;
+					  case 'a': case 'A':
+							tank.rotation.y += rotspeed;
+							heading = THREE.Math.radToDeg(tank.rotation.y) % 360;
+							//console.log("in");
+							wheelMeshes[1].rotation.x -= velocity * 1;
+							wheelMeshes[3].rotation.x -= velocity * 1;
+							wheelMeshes[5].rotation.x -= velocity * 1;
+							wheelMeshes[0].rotation.x += velocity * 1;
+							wheelMeshes[2].rotation.x += velocity * 1;
+							wheelMeshes[4].rotation.x += velocity * 1;
+							break;
+					  case 'd': case 'D':
+							tank.rotation.y -= rotspeed;
+							heading = THREE.Math.radToDeg(tank.rotation.y) % 360;
+							wheelMeshes[0].rotation.x -= velocity * 1;
+							wheelMeshes[2].rotation.x -= velocity * 1;
+							wheelMeshes[4].rotation.x -= velocity * 1;
+							wheelMeshes[1].rotation.x += velocity * 1;
+							wheelMeshes[3].rotation.x += velocity * 1;
+							wheelMeshes[5].rotation.x += velocity * 1;
+							break;*/
+					  case '%':
+							turretPivot.rotation.y -= barrelrotspeed;
+							if(turretPivot.rotation.y < 0)
+								turretPivot.rotation.y += 6;
+							barrelHeading = THREE.Math.radToDeg(turretPivot.rotation.y) % 360;
+							break;
+					  case "'":
+							turretPivot.rotation.y += barrelrotspeed;
+							barrelHeading = THREE.Math.radToDeg(turretPivot.rotation.y) % 360;
+							break;
+					  case " ":
+							//if(!target)
+							{
+								target = true;
+								targetM.push(new THREE.Mesh(targetGeometry, targetMaterial));
+								turretMesh.add(targetM[targetM.length - 1]);
+								targetM[targetM.length - 1].position.y += 0.5;
+								targettime.push(new Date());
+								/*targetMesh = new THREE.Mesh(targetGeometry, targetMaterial);
+								turretMesh.add(targetMesh);*/
+								//target = true;
+							}
+
+							break;
+					  case "q": case 'Q':
+							if(!endgame && score >= 10)
+							{
+								score = score - 10;
+								tank.position.set(0,0,0);
+								var bbb = Math.floor(Math.random()*bumbDistance - 2);
+								bumb.position.set(((bbb % 2) ? 1 : (-1)) * bbb,20,((playtime % 2) ? 1 : (-1)) * Math.sqrt(bumbDistance * bumbDistance - bbb * bbb));
+								tank.rotation.y = turretPivot.rotation.y = bumb.rotation.y = 0;
+								alive = true;
+								bumbrecover = false;
+								scene.add(tank);
+							}
+							else
+								endgame = true;
+							break;
+					}
+				};
+
+				renderer = new THREE.WebGLRenderer();
+
+				// set the background color to gray
+				renderer.setClearColor( 0xa0a0a0 );
+
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				document.body.appendChild( renderer.domElement );
+
+				// let's have the mouse affect the view
+				controls = new THREE.OrbitControls( camera, renderer.domElement );
+
+				window.addEventListener( 'resize', onWindowResize, false );
+
+				// add some GUI
+				params = new guiMe();
+				gui = new dat.GUI();
+
+				gui.add(params, 'Heading').listen();
+				gui.add(params, 'BarrelHeading').listen();
+				gui.add(params, 'Velocity', 0, 30);
+				gui.add(params, 'RotSpeed', 0, 1);
+				gui.add(params, 'BarrelRotSpeed', 0, 1);
+				gui.add(params, 'FollowMe');
+				gui.add(params, 'BumbVolocity',0, 5);
+				gui.add(params, 'BumbDistance', 100, 400);
+				gui.add(params, 'BumbRecoverTime', 0, 10);
+				gui.add(params, 'MonsterTime', 5, 10);
+				gui.open();
+
+			}
+
+			function onWindowResize() {
+
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+
+				renderer.setSize( window.innerWidth, window.innerHeight );
+
+			}
+
+			function render() 
+			{
+				if (followMe)
+				{  renderer.render( scene, tankcamera ); 
+					//console.log("ssssss");
+				}
+				else
+				{  renderer.render( scene, camera );  }
+			}
+
+			function tankdetectcollider()
+			{
+				//console.log(collidableMeshList.length);
+				var worldPosition = new THREE.Vector3();
+				tankz.length  = tankx.length = 0;
+				for(i = 0; i < 4; i++)
+				{
+					tank.getWorldPosition(worldPosition);
+					//console.log("worldPosition.z: " + worldPosition.z);
+					//console.log("worldPosition.x: " + worldPosition.x);
+					tankz.push(worldPosition.z + ((i % 2) ? 1 : (-1)) * 20); 
+					tankx.push(worldPosition.x + ((i >= 2) ? 1 : (-1)) * 20); 
+					//console.log("tank.position.z: " + tankz[i]);
+					//console.log("tank.position.x: " + tankx[i]);
+				}
+				collidableMeshList.forEach((obj) => {
+					cubex.length = cubez.length = 0;
+					for(i = 0; i < 4; i++)
+					{
+						obj.getWorldPosition(worldPosition);
+						//console.log("worldPosition.z: " + worldPosition.z);
+						//console.log("worldPosition.x: " + worldPosition.x);
+						cubez.push(worldPosition.z + ((i % 2) ? 1 : (-1)) * 20);
+						cubex.push(worldPosition.x + ((i >= 2) ? 1 : (-1)) * 20);
+						//console.log("obj.position.z: " + cubez[i]);
+						//console.log("obj.position.x: " + cubex[i]);
+					}
+					for(i = 0; i < 4; i++)
+					{
+						/*console.log("tankz[i]: " + tankz[i]);
+						console.log("tankx[i]: " + tankx[i]);
+						console.log("cubex[1]: " + cubex[1]);
+						console.log("cubex[2]: " + cubex[2]);
+						console.log("cubez[1]: " + cubez[1]);
+						console.log("cubez[2]: " + cubez[2]);*/
+						if(tankz[i] <= cubez[1] && tankz[i] >= cubez[2] && tankx[i] >= cubex[1] && tankx[i] <= cubex[2])
+						{
+							//console.log("hit");
+							if(score < 5)
+								endgame = true;
+							scene.remove(tank);
+							alive = false;
+						}
+					}
+				});
+			}/**/
+
+			function turretdetectcollider()
+			{
+				var worldPosition = new THREE.Vector3();
+				var turrety;
+				turretx.length  = turretz.length = 0;
+				for(j = 0;j < targetM.length; j++)
+				{
+					targetM[j].getWorldPosition(worldPosition);
+					for(i = 0; i < 4; i++)
+					{
+						turrety = worldPosition.y;
+						turretz.push(worldPosition.z + ((i % 2) ? 1 : (-1)) * 20);
+						turretx.push(worldPosition.x + ((i >= 2) ? 1 : (-1)) * 20); 
+					}
+				}
+				var bbb = 0;
+				collidableMeshList.forEach((obj) => {
+					bbb += 1;
+					cubex.length = cubez.length = 0;
+					for(i = 1; i < 3; i++)
+					{
+						obj.getWorldPosition(worldPosition);
+						cubez.push(worldPosition.z + ((i % 2) ? 1 : (-1)) * 20);
+						cubex.push(worldPosition.x + ((i >= 2) ? 1 : (-1)) * 20);
+					}
+					for(i = 0; i < turretz.length; i++)
+					{
+						if(turretz[i] <= cubez[0] && turretz[i] >= cubez[1] && turretx[i] >= cubex[0] && turretx[i] <= cubex[1]
+							&& turrety <= 20 && turrety >= 0)
+						{
+							turretMesh.remove(targetM[Math.floor(i/4)]);
+							targetM.splice(Math.floor(i/4), 1);
+							targettime.splice(Math.floor(i/4), 1);
+							turretz.splice(i/4, 4);
+							turretx.splice(i/4, 4);
+							scene.remove(obj);
+							if(bbb == 1)
+							{
+								score += (Math.floor(bumbVolocity) + 1) * 5;
+								bumbendtime = playtime;
+								obj.position.set(3000,-20,3000);
+								bumbrecover = true;
+							}
+							else
+							{
+								score += Math.floor(bumbVolocity) + 1;
+								var aaa = Math.floor(Math.random()* ( bumbDistance ) - 2);
+								//scene.remove(obj);
+								obj.position.set( ((i % 2) ? 1 : (-1)) * aaa + aaa, 20, ((aaa % 2) ? 1 : (-1)) * Math.sqrt((bumbDistance )* bumbDistance - (aaa + 20 )* aaa) + bumbDistance);
+								scene.add(obj);
+							}
+							cubex.length = cubez.length = 0;
+							break;
+						}
+					}
+				});
+			}/**/
+
+			function animate() {
+
+				requestAnimationFrame( animate );
+				render();
+				nowtime = new Date();
+				//console.log(starttime);
+				//gconsole.log(nowtime);
+				playtime = (nowtime - starttime)/ 1000;
+				if(endgame || Math.floor(playtime) >= 100 || score < 0)
+				{
+					endgame = true;
+					document.getElementById("para").innerHTML = "ENDGAME" + " score: " + score;
+				}
+				
+				if(!endgame)
+				{
+					document.getElementById("para").innerHTML = "time: " + Math.floor(playtime) + " score: " + score;
+					if(alive)
+						tankdetectcollider();
+					if(target)
+						turretdetectcollider();
+
+					if(tank.position.x >= 350)
+						tank.position.x = 350;
+					if(tank.position.x <= -350)
+						tank.position.x = -350;
+					if(tank.position.z >= 350)
+						tank.position.z = 350;
+					if(tank.position.z <= -350)
+						tank.position.z = -350;
+
+					if(Math.floor(playtime) % monstertime == 0 && s != Math.floor(playtime))
+					{
+						//console.log("ddddddd");
+						//console.log(Math.floor(playtime))
+						wallM.push(new THREE.Mesh(wallGeometry, wallMaterial));
+						var aaa = Math.floor(Math.random()* ( bumbDistance + 123 ) - 2);
+						wallM[wallM.length - 1].position.set( ((wallM.length % 2) ? 1 : (-1)) * (aaa + s), 20, ((aaa % 2) ? 1 : (-1)) * Math.sqrt((bumbDistance + s )* (bumbDistance + 20) - (playtime + s) * (aaa + 33)));
+						scene.add(wallM[wallM.length - 1]);
+						collidableMeshList.push(wallM[wallM.length - 1]);
+						s = Math.floor(playtime);
+					}
+					if(bumbrecover)
+					{
+						//console.log("wwwwwwwww")
+						//console.log(playtime - bumbendtime)
+						if((playtime - bumbendtime) >= bumbRecoverTime)
+						{
+							var bbb = Math.floor(Math.random()*bumbDistance - 2);
+							bumb.position.set(((bbb % 2) ? 1 : (-1)) * bbb,20,((playtime % 2) ? 1 : (-1)) * Math.sqrt(bumbDistance * bumbDistance - bbb * bbb));
+							scene.add(bumb);
+							bumbrecover = false;
+						}
+					}
+					
+					if(targetM.length == 0)
+						target = false;
+					if(target)
+					{
+						for(i = 0; i < targetM.length; i++)
+						{
+							//console.log(tank.rotation.y - tank.rotation.y);
+							//console.log(tank.rotation.y * 180 / Math.PI);
+							targetM[i].position.z += 1 * 1.3;
+							targetM[i].position.x += 0 * 1.3;
+							console.log(nowtime - targettime[i]);
+							targetM[i].position.y -= 9.8 * (nowtime - targettime[i]) * (nowtime - targettime[i]) / 1000000;
+							if(targetM[i].position.y <= -8)
+							{
+								//target = false;
+								turretMesh.remove(targetM[i]);
+								targetM.splice(i, 1);
+								targettime.splice(i, 1);
+							}
+						}
+						/*targetMesh.position.z += Math.cos(tank.rotation.y - tank.rotation.y) * 1.3;
+						targetMesh.position.x += Math.sin(tank.rotation.y - tank.rotation.y) * 1.3;
+						targetMesh.position.y -= 0.3;
+						if(targetMesh.position.y <= -8)
+						{
+							target = false;
+							turretMesh.remove(targetMesh);
+						}*/
+					}
+
+					if(keyboard.pressed("w+a") || keyboard.pressed("W+A"))
+					{
+						tank.rotation.y += rotspeed;
+						heading = THREE.Math.radToDeg(tank.rotation.y) % 360;
+						tank.position.z += Math.cos(tank.rotation.y) * velocity / 2;
+						tank.position.x += Math.sin(tank.rotation.y) * velocity / 2;
+						if(barrelHeading > 360)
+							barrelHeading -= 360;
+						wheelMeshes.forEach((obj) => {
+	  						obj.rotation.x += velocity * 3;
+						});
+
+					}
+					else if(keyboard.pressed("w+d") || keyboard.pressed("W+D"))
+					{
+						tank.rotation.y -= rotspeed;
+						if(tank.rotation.y < 0)
+							tank.rotation.y += 6;
+						heading = THREE.Math.radToDeg(tank.rotation.y) % 360;
+						tank.position.z += Math.cos(tank.rotation.y) * velocity / 2;
+						tank.position.x += Math.sin(tank.rotation.y) * velocity / 2;
+						barrelHeading -= THREE.Math.radToDeg(rotspeed) % 360;
+						if(barrelHeading < 0)
+							barrelHeading += 360;
+						wheelMeshes.forEach((obj) => {
+	  						obj.rotation.x += velocity * 3;
+						});
+					}
+					else if(keyboard.pressed("s+d") || keyboard.pressed("S+D"))
+					{
+						tank.rotation.y -= rotspeed;
+						if(tank.rotation.y < 0)
+							tank.rotation.y += 6;
+						heading = THREE.Math.radToDeg(tank.rotation.y) % 360;
+						tank.position.z -= Math.cos(tank.rotation.y) * velocity / 2;
+						tank.position.x  -= Math.sin(tank.rotation.y) * velocity / 2;
+						barrelHeading -= THREE.Math.radToDeg(rotspeed) % 360;
+						if(barrelHeading < 0)
+							barrelHeading += 360;
+						wheelMeshes.forEach((obj) => {
+	  						obj.rotation.x -= velocity * 3;
+						});
+					}
+					else if(keyboard.pressed("s+a") || keyboard.pressed("S+A"))
+					{
+						tank.rotation.y += rotspeed;
+						heading = THREE.Math.radToDeg(tank.rotation.y) % 360;
+						tank.position.z -= Math.cos(tank.rotation.y) * velocity / 2;
+						tank.position.x  -= Math.sin(tank.rotation.y) * velocity / 2;
+						if(barrelHeading > 360)
+							barrelHeading -= 360;
+						wheelMeshes.forEach((obj) => {
+	  						obj.rotation.x -= velocity * 3;
+						});
+					}
+					else if(keyboard.pressed("w") || keyboard.pressed("W"))
+					{
+						tank.position.z += Math.cos(tank.rotation.y) * velocity / 2;
+						tank.position.x += Math.sin(tank.rotation.y) * velocity / 2;
+						wheelMeshes.forEach((obj) => {
+	  						obj.rotation.x += velocity * 3;
+						});
+					}
+					else if(keyboard.pressed("s") || keyboard.pressed("S"))
+					{
+						tank.position.z -= Math.cos(tank.rotation.y) * velocity / 2;
+						tank.position.x  -= Math.sin(tank.rotation.y) * velocity / 2;
+						wheelMeshes.forEach((obj) => {
+	  						obj.rotation.x -= velocity * 3;
+						});
+					}
+					else if(keyboard.pressed("a") || keyboard.pressed("A"))
+					{
+						tank.rotation.y += rotspeed;
+						heading = THREE.Math.radToDeg(tank.rotation.y) % 360;
+						barrelHeading += THREE.Math.radToDeg(rotspeed) % 360;
+						if(barrelHeading > 360)
+							barrelHeading -= 360;
+						wheelMeshes[1].rotation.x -= velocity * 1;
+						wheelMeshes[3].rotation.x -= velocity * 1;
+						wheelMeshes[0].rotation.x += velocity * 1;
+						wheelMeshes[2].rotation.x += velocity * 1;
+					}
+					else if(keyboard.pressed("d") || keyboard.pressed("D"))
+					{
+						tank.rotation.y -= rotspeed;
+						if(tank.rotation.y < 0)
+							tank.rotation.y += 6;
+						heading = THREE.Math.radToDeg(tank.rotation.y) % 360;
+						barrelHeading -= THREE.Math.radToDeg(rotspeed) % 360;
+						if(barrelHeading < 0)
+							barrelHeading += 360;
+						wheelMeshes[0].rotation.x -= velocity * 1;
+						wheelMeshes[2].rotation.x -= velocity * 1;
+						wheelMeshes[1].rotation.x += velocity * 1;
+						wheelMeshes[3].rotation.x += velocity * 1;
+					}
+
+					var relativeCameraOffset = new THREE.Vector3(0,150,-350);
+					var cameraOffset = relativeCameraOffset.applyMatrix4( tank.matrixWorld );
+					tankcamera.position.x = cameraOffset.x;
+					tankcamera.position.y = cameraOffset.y;
+					tankcamera.position.z = cameraOffset.z;
+					tankcamera.lookAt( tank.position );
+
+					if(alive)
+					{
+						bumb.lookAt(tank.position); 
+						//console.log(bumb.rotation.y);
+						if(bumb.position.z < tank.position.z)
+							bumb.position.z += Math.cos(bumb.rotation.y) * bumbVolocity;
+						else
+							bumb.position.z -= Math.cos(bumb.rotation.y) * bumbVolocity;
+						if(bumb.position.x < tank.position.x)
+							bumb.position.x += Math.cos(bumb.rotation.y) * bumbVolocity;
+						else
+							bumb.position.x -= Math.cos(bumb.rotation.y) * bumbVolocity;
+					}/**/
+				}
+				
+				velocity = params.Velocity;
+				params.Heading = heading;
+				params.BarrelHeading = barrelHeading;
+				rotspeed = params.RotSpeed;
+				barrelrotspeed = params.BarrelRotSpeed;/**/
+				followMe = params.FollowMe;
+				bumbVolocity = params.BumbVolocity;
+				bumbDistance = params.BumbDistance;
+				bumbRecoverTime = params.BumbRecoverTime;
+				monstertime = params.MonsterTime;
+				// have the mouse update the view
+				controls.update();
+
+			}
+
+		</script>
+
+	</body>
+</html>
